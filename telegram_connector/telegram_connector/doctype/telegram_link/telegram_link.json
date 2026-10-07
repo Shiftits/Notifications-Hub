@@ -1,0 +1,116 @@
+{
+ "doctype": "DocType",
+ "name": "Telegram Link",
+ "module": "Telegram Connector",
+ "engine": "InnoDB",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "fields": [
+  {
+   "fieldname": "party_type",
+   "fieldtype": "Link",
+   "label": "Party Type",
+   "options": "DocType",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "party",
+   "fieldtype": "Dynamic Link",
+   "label": "Party",
+   "options": "party_type",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "mobile_no",
+   "fieldtype": "Data",
+   "label": "Mobile No",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Pending\nLinked\nFailed",
+   "default": "Pending",
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "col",
+   "fieldtype": "Column Break",
+   "label": "Col"
+  },
+  {
+   "fieldname": "chat_id",
+   "fieldtype": "Data",
+   "label": "Chat Id"
+  },
+  {
+   "fieldname": "telegram_username",
+   "fieldtype": "Data",
+   "label": "Telegram Username",
+   "read_only": 1
+  },
+  {
+   "fieldname": "token",
+   "fieldtype": "Data",
+   "label": "Token",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "deep_link",
+   "fieldtype": "Small Text",
+   "label": "Deep Link",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Last Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sec_actions",
+   "fieldtype": "Section Break",
+   "label": "Sec Actions"
+  },
+  {
+   "fieldname": "btn_link_now",
+   "fieldtype": "Button",
+   "label": "Link Now"
+  },
+  {
+   "fieldname": "btn_send_test",
+   "fieldtype": "Button",
+   "label": "Send Test Message"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "Sales User",
+   "read": 1,
+   "write": 1,
+   "create": 1
+  },
+  {
+   "role": "Accounts User",
+   "read": 1,
+   "write": 1,
+   "create": 1
+  }
+ ],
+ "autoname": "TGL-.#####",
+ "search_fields": "party,mobile_no"
+}

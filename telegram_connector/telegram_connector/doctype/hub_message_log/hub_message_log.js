@@ -1,0 +1,10 @@
+frappe.ui.form.on("Hub Message Log", {
+	refresh(frm) {
+		if (frm.doc.status === "Sent") return;
+		frm.add_custom_button(__("Retry"), () =>
+			frm.call({ doc: frm.doc, method: "retry" }).then(r => {
+				frappe.show_alert({ message: r.message, indicator: "blue" });
+				frm.reload_doc();
+			}));
+	},
+});
