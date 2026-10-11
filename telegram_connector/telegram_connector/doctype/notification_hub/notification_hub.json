@@ -90,6 +90,13 @@
    "read_only": 1
   },
   {
+   "fieldname": "group_chat_id",
+   "fieldtype": "Data",
+   "label": "Group Chat ID",
+   "description": "Telegram group chat id (negative number, e.g. -100...). Delivery Trip / Transportation Request details are also posted here. Bot mode only.",
+   "default": "-5524050749"
+  },
+  {
    "fieldname": "link_method",
    "fieldtype": "Select",
    "label": "Link Method",

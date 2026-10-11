@@ -397,7 +397,11 @@ def deliver(log_name, notify=False):
                 error = f"Could not generate PDF: {e}"
         link = find_link(log.party_type, log.party, log.mobile_no)
         pdf_name = f"{log.reference_name}.pdf"
-        if s.mode == "Bot":
+        if s.mode == "Bot" and not log.party_type and log.chat_id:
+            # Group message: no Telegram Link needed, send straight to the group chat id
+            chat_id = log.chat_id
+            send_text(chat_id, None, log.message, pdf, pdf_name)
+        elif s.mode == "Bot":
             if not (link and link.status == "Linked" and link.chat_id):
                 link = link or ensure_link(log.party_type, log.party, log.mobile_no)
                 raise NotLinked(f"The customer has not linked their account yet. Link: {link.deep_link}")
@@ -666,3 +670,4 @@ def cleanup_public_pdfs():
     }, pluck="name")
     for n in old:
         frappe.delete_doc("File", n, ignore_permissions=True, force=True)
+        

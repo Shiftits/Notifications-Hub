@@ -1,11 +1,29 @@
+"""Send Delivery Trip / Transportation Request details to the assigned Driver on Telegram.
+
+Recipients of every document:
+- the assigned Driver (if set)
+- the user who created the document (doc.owner)
+
+For each recipient:
+- First save (or new assignment)          -> full details are sent.
+- Later saves / update-after-submit       -> only the changes are sent.
+- If nothing was ever delivered to that recipient yet (e.g. not linked on Telegram),
+  the full details are sent again on the next save.
+- Driver changed                          -> previous driver gets a "reassigned" notice.
+Every send is also written to the document's Activity timeline (who, to whom, by whom).
+"""
+
 import frappe
 from frappe.utils import escape_html
 
 from telegram_connector import sender
 
 DRIVER_DOCTYPE = "Driver"
+USER_DOCTYPE = "User"
+GROUP = "Group"  # marker for the Telegram group recipient (not a DocType)
 STOP_DOCTYPE = "Delivery Stop"
 
+# Per DocType: fields shown in the message and tracked for changes, and whether it has a stops table
 DOCTYPE_CONFIG = {
     "Delivery Trip": {
         "fields": ["company", "vehicle", "departure_time", "total_estimated_distance"],
@@ -34,22 +52,47 @@ def on_update(doc, method=None):
     old_driver = before.get("driver") if before else None
 
     if old_driver and old_driver != driver:
-        _enqueue(doc.doctype, doc.name, old_driver, reassigned_message(doc), channels, "Reassignment notice")
+        _enqueue(doc.doctype, doc.name, DRIVER_DOCTYPE, old_driver,
+                 reassigned_message(doc), channels, "Reassignment notice")
 
-    if not driver:
-        return
+    recipients = []
+    if driver:
+        recipients.append((DRIVER_DOCTYPE, driver))
+    if doc.owner:
+        recipients.append((USER_DOCTYPE, doc.owner))
 
-    if not before or old_driver != driver or not _sent_before(doc.doctype, doc.name, driver):
-        text = full_message(doc, f"{doc.doctype} assigned to you")
-        kind = "Details"
-    else:
-        changes = describe_changes(doc, before)
-        if not changes:
-            return
-        text = update_message(doc, changes)
-        kind = "Update"
+    # Telegram group (set in Notification Hub > Group Chat ID)
+    group_id = _group_id()
+    if group_id:
+        recipients.append((GROUP, group_id))
 
-    _enqueue(doc.doctype, doc.name, driver, text, channels, kind)
+    seen = set()
+    for party_type, party in recipients:
+        if (party_type, party) in seen:
+            continue
+        seen.add((party_type, party))
+
+        new_assignment = party_type == DRIVER_DOCTYPE and (not before or old_driver != driver)
+        if party_type == GROUP:
+            full_needed = not before or not _group_sent_before(doc.doctype, doc.name, party)
+        else:
+            full_needed = not before or new_assignment or not _sent_before(doc.doctype, doc.name, party_type, party)
+
+        if full_needed:
+            if party_type == DRIVER_DOCTYPE:
+                title = f"{doc.doctype} assigned to you"
+            else:
+                title = f"{doc.doctype} details"
+            text = full_message(doc, title)
+            kind = "Details"
+        else:
+            changes = describe_changes(doc, before)
+            if not changes:
+                continue
+            text = update_message(doc, changes)
+            kind = "Update"
+
+        _enqueue(doc.doctype, doc.name, party_type, party, text, channels, kind)
 
 
 # ---------------- Delivery ----------------
@@ -61,14 +104,15 @@ def _driver_channels():
     return ["Telegram"] if sender.channel_enabled("Telegram") else []
 
 
-def _enqueue(doctype, name, driver, text, channels, kind):
+def _enqueue(doctype, name, party_type, party, text, channels, kind):
     frappe.enqueue(
-        "telegram_connector.driver_notifications.send_to_driver",
+        "telegram_connector.driver_notifications.send_to_party",
         queue="short",
         enqueue_after_commit=True,
         doctype=doctype,
         name=name,
-        driver=driver,
+        party_type=party_type,
+        party=party,
         text=text,
         channels=channels,
         kind=kind,
@@ -76,19 +120,41 @@ def _enqueue(doctype, name, driver, text, channels, kind):
     )
 
 
-def _driver_phone(driver):
-    """Driver's cell_number; if empty, the linked Employee's cell_number; if still empty, the linked User's mobile_no."""
-    d = frappe.db.get_value(DRIVER_DOCTYPE, driver, ["cell_number", "employee", "user"], as_dict=True) or {}
-    cell = d.get("cell_number")
-    if not cell and d.get("employee") and frappe.db.exists("Employee", d.employee):
-        cell = frappe.db.get_value("Employee", d.employee, "cell_number")
-    if not cell and d.get("user") and frappe.db.exists("User", d.user):
-        cell = frappe.db.get_value("User", d.user, "mobile_no")
+def _group_id():
+    s = sender.settings()
+    if not s.enabled:
+        return ""
+    return (s.get("group_chat_id") or "").strip()
+
+
+def _group_sent_before(doctype, name, chat_id):
+    return bool(frappe.db.exists("Hub Message Log", {
+        "reference_doctype": doctype, "reference_name": name,
+        "chat_id": chat_id, "status": "Sent", "party_type": ["is", "not set"],
+    }))
+
+
+def _party_phone(party_type, party):
+    """Driver: Driver.cell_number -> Employee.cell_number -> User.mobile_no.
+    User: User.mobile_no -> Employee.cell_number of the Employee linked to that user."""
+    if party_type == DRIVER_DOCTYPE:
+        d = frappe.db.get_value(DRIVER_DOCTYPE, party, ["cell_number", "employee", "user"], as_dict=True) or {}
+        cell = d.get("cell_number")
+        if not cell and d.get("employee") and frappe.db.exists("Employee", d.employee):
+            cell = frappe.db.get_value("Employee", d.employee, "cell_number")
+        if not cell and d.get("user") and frappe.db.exists("User", d.user):
+            cell = frappe.db.get_value("User", d.user, "mobile_no")
+    else:
+        cell = frappe.db.get_value("User", party, "mobile_no")
+        if not cell:
+            cell = frappe.db.get_value("Employee", {"user_id": party}, "cell_number")
     return sender.normalize_phone(cell, sender.settings().default_country_code)
 
 
-def send_to_driver(doctype, name, driver, text, channels, kind="Details", sent_by=None):
-    phone = _driver_phone(driver)
+def send_to_party(doctype, name, party_type, party, text, channels, kind="Details", sent_by=None):
+    if party_type == GROUP:
+        return send_to_group(doctype, name, party, text, kind, sent_by)
+    phone = _party_phone(party_type, party)
     for ch in channels:
         log = frappe.get_doc({
             "doctype": "Hub Message Log",
@@ -96,8 +162,8 @@ def send_to_driver(doctype, name, driver, text, channels, kind="Details", sent_b
             "channel": ch,
             "reference_doctype": doctype,
             "reference_name": name,
-            "party_type": DRIVER_DOCTYPE,
-            "party": driver,
+            "party_type": party_type,
+            "party": party,
             "mobile_no": phone,
             "message": text,
             "attach_print": 0,
@@ -105,17 +171,49 @@ def send_to_driver(doctype, name, driver, text, channels, kind="Details", sent_b
         frappe.db.commit()
         sender.deliver(log.name, notify=False)
         status, error = frappe.db.get_value("Hub Message Log", log.name, ["status", "error"])
-        _log_activity(doctype, name, driver, phone, ch, kind, status, error, text, sent_by)
+        _log_activity(doctype, name, party_type, party, phone, ch, kind, status, error, text, sent_by)
 
 
-def _log_activity(doctype, name, driver, phone, channel, kind, status, error, text, sent_by):
+def send_to_group(doctype, name, chat_id, text, kind="Details", sent_by=None):
+    log = frappe.get_doc({
+        "doctype": "Hub Message Log",
+        "status": "Queued",
+        "channel": "Telegram",
+        "reference_doctype": doctype,
+        "reference_name": name,
+        "chat_id": chat_id,
+        "message": text,
+        "attach_print": 0,
+    }).insert(ignore_permissions=True)
+    frappe.db.commit()
+    sender.deliver(log.name, notify=False)
+    status, error = frappe.db.get_value("Hub Message Log", log.name, ["status", "error"])
+    _log_group_activity(doctype, name, chat_id, kind, status, error, text, sent_by)
+
+
+def _log_group_activity(doctype, name, chat_id, kind, status, error, text, sent_by):
+    try:
+        sender_name = frappe.db.get_value("User", sent_by, "full_name") or sent_by or "System"
+        icon = {"Sent": "✅"}.get(status, "❌")
+        head = f"{icon} <b>{escape_html(kind)}</b> sent to Telegram group <b>{escape_html(chat_id)}</b> " \
+               f"via <b>Telegram</b>: <b>{escape_html(status or '-')}</b><br>" \
+               f"By: {escape_html(sender_name)}"
+        if error:
+            head += f"<br>Reason: {escape_html(error).replace(chr(10), '<br>')}"
+        body = escape_html(text).replace("\n", "<br>")
+        frappe.get_doc(doctype, name).add_comment("Info", f"{head}<br><br>{body}")
+    except Exception:
+        frappe.log_error(title="Telegram: group notification activity", message=frappe.get_traceback())
+
+
+def _log_activity(doctype, name, party_type, party, phone, channel, kind, status, error, text, sent_by):
     """Write a line in the document's activity timeline: what was sent, to whom, by whom."""
     try:
-        driver_name = frappe.db.get_value(DRIVER_DOCTYPE, driver, "full_name") or driver
+        party_name = frappe.db.get_value(party_type, party, "full_name") or party
         sender_name = frappe.db.get_value("User", sent_by, "full_name") or sent_by or "System"
-        to = f"{driver_name} ({driver})" + (f", {phone}" if phone else "")
+        to = f"{party_name} ({party})" + (f", {phone}" if phone else "")
         icon = {"Sent": "✅", "Not Linked": "⚠️"}.get(status, "❌")
-        head = f"{icon} <b>{escape_html(kind)}</b> sent to Driver <b>{escape_html(to)}</b> " \
+        head = f"{icon} <b>{escape_html(kind)}</b> sent to {escape_html(party_type)} <b>{escape_html(to)}</b> " \
                f"via <b>{channel}</b>: <b>{escape_html(status or '-')}</b><br>" \
                f"By: {escape_html(sender_name)}"
         if error:
@@ -126,10 +224,10 @@ def _log_activity(doctype, name, driver, phone, channel, kind, status, error, te
         frappe.log_error(title="Telegram: driver notification activity", message=frappe.get_traceback())
 
 
-def _sent_before(doctype, name, driver):
+def _sent_before(doctype, name, party_type, party):
     return bool(frappe.db.exists("Hub Message Log", {
         "reference_doctype": doctype, "reference_name": name,
-        "party_type": DRIVER_DOCTYPE, "party": driver, "status": "Sent",
+        "party_type": party_type, "party": party, "status": "Sent",
     }))
 
 
@@ -224,3 +322,4 @@ def describe_changes(doc, before):
 
 def _norm(value):
     return "" if value is None else str(value)
+    
