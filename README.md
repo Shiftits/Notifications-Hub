@@ -6,10 +6,7 @@ Frappe/ERPNext app that sends document notifications (such as invoices) to custo
 - **Hub Notification Rule**: sending rules. Pick DocType + Event + Channel (Telegram / WhatsApp / Both); recipient fields and a ready message are filled in automatically. Template buttons: Insert Field, Preview, Load Default Template.
 - **Hub Message Log**: log of every message with its channel and status, with a Retry button.
 - **Notify Customer** button on Sales Invoice: sends the invoice immediately via the enabled channel(s).
-<<<<<<< HEAD
 - **Transportation Request to Driver** (automatic): when a Transportation Request gets a Driver and is saved, the request details (customer, route, departure) are sent to the driver. Later saves send only what changed. Each send is logged in the request's Activity. If the driver is changed, the previous driver is notified. The driver must be linked once (Driver's Telegram link), like customers.
-=======
->>>>>>> 80269dd80930c79aece73c451d1d8dd2a12e4832
 
 ## Setup guides
 Open **Notification Hub**: the top section has four buttons (WhatsApp Guide, Telegram Bot Guide, Telegram User Account Guide, Troubleshooting) that show step-by-step instructions.
