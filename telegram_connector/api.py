@@ -1,0 +1,96 @@
+import hmac
+import frappe
+from telegram_connector import sender
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def webhook():
+    s = sender.settings()
+    got = frappe.get_request_header("X-Telegram-Bot-Api-Secret-Token") or ""
+    want = s.get_password("webhook_secret", raise_exception=False) or ""
+    if not want or not hmac.compare_digest(got, want):
+        frappe.local.response["http_status_code"] = 403
+        return "forbidden"
+    sender.process_update(frappe.parse_json(frappe.request.data))
+    return "ok"
+
+
+@frappe.whitelist()
+def get_party_mobile(party_type, party):
+    frappe.has_permission(party_type, "read", party, throw=True)
+    meta = frappe.get_meta(party_type)
+    for f in ("mobile_no", "mobile", "phone", "contact_mobile"):
+        if meta.has_field(f):
+            v = frappe.db.get_value(party_type, party, f)
+            if v:
+                return v
+
+
+@frappe.whitelist()
+def get_or_create_link(party_type, party):
+    frappe.has_permission("Telegram Link", "create", throw=True)
+    link = sender.find_link(party_type, party, None)
+    if not link:
+        link = sender.ensure_link(party_type, party, get_party_mobile(party_type, party))
+    return link.name
+
+
+@frappe.whitelist()
+def get_enabled_channels():
+    return sender.enabled_channels()
+
+
+@frappe.whitelist()
+def get_preset(doctype):
+    """Ready-made recipient fields + message for the Hub Notification Rule form."""
+    frappe.has_permission("Hub Notification Rule", "write", throw=True)
+    from telegram_connector import presets
+
+    return presets.get_preset(doctype)
+
+
+@frappe.whitelist()
+def preview_message(doctype, name, message):
+    """Render a message template against a real document (Preview button)."""
+    frappe.has_permission("Hub Notification Rule", "write", throw=True)
+    frappe.has_permission(doctype, "read", name, throw=True)
+    return frappe.render_template(message or "", {"doc": frappe.get_doc(doctype, name)})
+
+
+def _pick_rule(doctype, channel):
+    rules = frappe.get_all(
+        "Hub Notification Rule", filters={"enabled": 1, "document_type": doctype},
+        fields=["name", "event", "channel"],
+    )
+    rules = [r for r in rules if (r.channel or "Telegram") in (channel, "Both")]
+    if rules:
+        rules.sort(key=lambda r: r.event != "Submit")  # prefer the Submit rule
+        return rules[0].name
+    if doctype == "Sales Invoice":
+        # No rule configured: fall back to the built-in default so the button works out of the box
+        from telegram_connector import presets
+
+        return frappe._dict(presets.get_preset("Sales Invoice"), name=None, print_format=None)
+    frappe.throw(f"No enabled Hub Notification Rule found for {doctype}. Please create one first.")
+
+
+@frappe.whitelist()
+def notify_customer(doctype, name, channel=None):
+    """Notify Customer button: send the document now via Telegram, WhatsApp or both."""
+    frappe.has_permission(doctype, "read", name, throw=True)
+    enabled = sender.enabled_channels()
+    if not enabled:
+        frappe.throw("No channel is enabled. Enable Telegram or WhatsApp in Notification Hub.")
+    if channel in (None, "", "Both"):
+        targets = enabled
+    elif channel in enabled:
+        targets = [channel]
+    else:
+        frappe.throw(f"{channel} is not enabled in Notification Hub")
+    results = []
+    for ch in targets:
+        rule = _pick_rule(doctype, ch)
+        for log in sender.process_rule(rule, doctype, name, force=True, channels=[ch]):
+            st, err = frappe.db.get_value("Hub Message Log", log, ["status", "error"])
+            results.append({"channel": ch, "status": st, "error": err, "log": log})
+    return {"results": results}
